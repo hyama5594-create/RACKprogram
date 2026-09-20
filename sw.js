@@ -1,6 +1,9 @@
-/* キャッシュ名を変えると更新が配信されます（rack-v1 → rack-v2 …） */
-const CACHE = 'rack-v2';
-const ASSETS = ['./', './index.html', './manifest.json', './icon-180.png', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
+/* キャッシュ名を変えると更新が配信されます（rack-v3 → rack-v4 …） */
+const CACHE = 'rack-v3';
+const ASSETS = ['./','./index.html','./manifest.json',
+  './icon-180.png','./icon-192.png','./icon-512.png','./icon-maskable-512.png',
+  './man-today.png','./man-menu.png','./man-group.png','./man-session.png',
+  './man-focus.png','./man-timer.png','./man-timerset.png','./man-plan.png','./man-log.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
