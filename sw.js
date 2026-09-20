@@ -1,5 +1,5 @@
-/* キャッシュ名を変えると更新が配信されます（rack-v3 → rack-v4 …） */
-const CACHE = 'rack-v3';
+/* キャッシュ名を変えると更新が配信されます（rack-v5 → rack-v6 …） */
+const CACHE = 'rack-v5';
 const ASSETS = ['./','./index.html','./manifest.json',
   './icon-180.png','./icon-192.png','./icon-512.png','./icon-maskable-512.png',
   './man-today.png','./man-menu.png','./man-group.png','./man-session.png',

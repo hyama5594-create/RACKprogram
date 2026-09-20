@@ -30,7 +30,8 @@ header{position:sticky;top:0;z-index:30;background:var(--paper);border-bottom:2p
   padding:calc(env(safe-area-inset-top,0px) + 10px) var(--pad) 10px;display:flex;align-items:baseline;gap:10px}
 .brand{font-weight:900;font-size:19px;letter-spacing:-.03em}
 .brand em{font-style:normal;color:var(--red)}
-.hdate{margin-left:auto;font-size:12px;color:var(--mute)}
+.hdate{margin-left:10px;font-size:12px;color:var(--mute)}
+.ver{font-size:11px;color:var(--mute);font-weight:700;padding:6px 0 6px 8px;letter-spacing:.01em}
 
 nav{position:fixed;left:0;right:0;bottom:0;z-index:40;display:grid;grid-template-columns:repeat(4,1fr);
   background:var(--paper);border-top:2px solid var(--ink);padding-bottom:var(--safe-b)}
@@ -183,7 +184,8 @@ table.log td:last-child{text-align:right;font-weight:700}
 </head>
 <body>
 <header><div class="brand">RACK<em>.</em></div><div class="hdate" id="hdate"></div>
-<button class="btn sm ghost" style="margin-left:10px;padding:6px 11px" data-act="timer">タイマー</button></header>
+<button class="btn sm ghost" style="margin-left:auto;padding:6px 11px" data-act="timer">タイマー</button>
+<button class="ver" id="ver" data-act="ver">v0.0</button></header>
 <main id="main"></main>
 
 <div id="tbar">
@@ -223,7 +225,7 @@ table.log td:last-child{text-align:right;font-weight:700}
   </div>
   <div class="fxbtn">
     <button class="btn" data-act="fxskip">スキップ</button>
-    <button class="btn red" data-act="fxdone">記録して休憩</button>
+    <button class="btn red" id="fxDoneBtn" data-act="fxdone">記録して休憩</button>
   </div>
 </div>
 
@@ -240,6 +242,11 @@ table.log td:last-child{text-align:right;font-weight:700}
 
 <script>
 'use strict';
+const VER='2.2';
+const CHANGES=[['2.2','「前回と同じ」ボタン / 記録の修正 / 週1の自動バックアップと復元 / 週ごとの総ボリューム'],
+ ['2.1','セット完了時にタイマーを自動で開くかどうかを選べるようにした / 右上にバージョンを表示'],
+ ['2.0','起動時は必ず「今日」から / メニュー作成を1行構成に簡略化 / ＋−ボタンで入力 / プランに統合 / iPhone標準タイマー連携 / 画面つきマニュアル'],
+ ['1.0','初版']];
 /* ========== RPEチャート ========== */
 const RPE={
  10:[100,95.5,92.2,89.2,86.3,83.7,81.1,78.6,76.2,73.9,70.7,68.0],
@@ -270,7 +277,7 @@ function defaults(){
     mk('インクラインダンベルプレス',0,120,false),mk('ベントオーバーロウ',0,150),mk('ラットプルダウン',0,120,false),
     mk('オーバーヘッドプレス',0,150),mk('レッグプレス',0,150,false),mk('ケーブルロウ',0,120,false),
     mk('トライセプスプレスダウン',0,90,false),mk('フェイスプル',0,90,false),mk('レッグカール',0,90,false)];
-  return {v:2,settings:{bar:20,round:2.5,rest:180,scName:'レストタイマー',scAfter:'clock',presets:[90,180,300],step:30},
+  return {v:2,settings:{bar:20,round:2.5,rest:180,scName:'レストタイマー',scAfter:'clock',presets:[90,180,300],step:30,autoTimer:true},
     oneRM:{[ex[0].id]:130,[ex[1].id]:105,[ex[2].id]:160},
     exercises:ex,menus:[],plans:[],logs:[],active:null,tour:false};
 }
@@ -341,6 +348,11 @@ function lastKg(exId){
     if(it&&it.sets.length) return Math.max.apply(null,it.sets.map(s=>+s.kg||0)); }
   return 0;
 }
+function lastSets(exId){
+  const ls=S.logs.slice().sort((a,b)=>b.date.localeCompare(a.date));
+  for(const l of ls){ const it=l.items.find(x=>x.exId===exId); if(it&&it.sets.length)return it.sets; }
+  return null;
+}
 function lastLog(exId){
   const ls=S.logs.slice().sort((a,b)=>b.date.localeCompare(a.date));
   for(const l of ls){ const it=l.items.find(x=>x.exId===exId); if(it&&it.sets.length){
@@ -409,7 +421,9 @@ function vSession(){
         '<button data-act="nudge" data-f="reps" data-v="1">＋</button></div>'+
         '<button class="chk" data-act="chk">✓</button></div>';
     });
-    h+='</div><div class="row" style="padding:0 14px 12px"><button class="btn ghost sm" data-act="addset" data-i="'+i+'">セット追加</button>'+
+    h+='</div><div class="row wrap" style="padding:0 14px 12px">'+
+      (lastSets(it.exId)?'<button class="btn sm" data-act="same" data-i="'+i+'">前回と同じ</button>':'')+
+      '<button class="btn ghost sm" data-act="addset" data-i="'+i+'">セット追加</button>'+
       '<button class="btn ghost sm" data-act="rmex" data-i="'+i+'">種目を外す</button></div></div>';
   });
   h+='<div style="height:60px"></div>'+
@@ -445,11 +459,34 @@ function vLog(){
   let h='';
   if(ids.length){
     const sel=ids.includes(S.chartEx)?S.chartEx:ids[0];
-    h+='<div class="chips">'+ids.map(id=>'<button class="chip'+(id===sel?' on':'')+'" data-act="chart" data-id="'+id+'">'+esc(EX(id).name)+'</button>').join('')+'</div>'+
+    h+='<h2>種目ごとの推定1RM</h2><div class="chips">'+ids.map(id=>'<button class="chip'+(id===sel?' on':'')+'" data-act="chart" data-id="'+id+'">'+esc(EX(id).name)+'</button>').join('')+'</div>'+
       '<div class="card"><div class="pad">'+chart(sel)+'</div></div>';
   }
+  h+='<h2>週ごとのボリューム</h2>'+(volChart()||'<div class="empty">記録が増えるとここに出ます。</div>');
   h+='<h2>履歴</h2>'+recent(100);
   return h;
+}
+function weekStart(dstr){
+  const d=new Date(dstr+'T00:00:00'); const w=(d.getDay()+6)%7; d.setDate(d.getDate()-w);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function volChart(){
+  const m={};
+  S.logs.forEach(l=>{ const k=weekStart(l.date); m[k]=(m[k]||0)+(l.volume||0); });
+  const ks=Object.keys(m).sort().slice(-10);
+  if(!ks.length)return '';
+  const vs=ks.map(k=>m[k]), mx=Math.max.apply(null,vs)||1;
+  const W=320,H=120,P=16,bw=(W-P*2)/ks.length*0.62, gap=(W-P*2)/ks.length;
+  const bars=ks.map((k,i)=>{ const h=(vs[i]/mx)*(H-30);
+    return '<rect x="'+(P+i*gap+(gap-bw)/2).toFixed(1)+'" y="'+(H-14-h).toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h.toFixed(1)+'" fill="#D50032" rx="2"/>'; }).join('');
+  const labs=ks.map((k,i)=>'<text x="'+(P+i*gap+gap/2).toFixed(1)+'" y="'+(H-3)+'" font-size="8" fill="#666B72" text-anchor="middle">'+k.slice(5).replace('-','/')+'</text>').join('');
+  const now=vs[vs.length-1], prev=vs.length>1?vs[vs.length-2]:0;
+  return '<div class="card"><div class="pad">'+
+    '<div class="row" style="align-items:baseline;gap:8px"><div class="num" style="font-size:26px;font-weight:900;letter-spacing:-.04em">'+
+    Math.round(now).toLocaleString()+'<span style="font-size:13px"> kg</span></div>'+
+    '<div class="small mute">今週の総ボリューム'+(prev?'　前週比 '+(now>=prev?'+':'')+Math.round((now/prev-1)*100)+'%':'')+'</div></div>'+
+    '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;margin-top:6px">'+bars+labs+'</svg>'+
+    '<div class="small mute">週ごとの総挙上量（重量×回数の合計・全種目）</div></div></div>';
 }
 function chart(exId){
   const pts=[];
@@ -484,6 +521,8 @@ function vSet(){
     [['clock','時計アプリを開く'],['back','このアプリに戻る'],['none','何もしない']].map(o=>'<option value="'+o[0]+'"'+(s.scAfter===o[0]?' selected':'')+'>'+o[1]+'</option>').join('')+'</select>'+
     '<label class="f">プリセット（3つ・「3」「3:00」「180」どれでも可）</label><div class="row">'+
     s.presets.map((p,i)=>'<input type="text" class="num" style="text-align:center" data-preset="'+i+'" value="'+mmss(p)+'">').join('')+'</div>'+
+    '<label class="f">セット完了で自動的にタイマーを開始</label><select data-cfg="autoTimer">'+
+    [['1','する'],['0','しない']].map(o=>'<option value="'+o[0]+'"'+((s.autoTimer!==false)===(o[0]==='1')?' selected':'')+'>'+o[1]+'</option>').join('')+'</select>'+
     '<label class="f">＋−ボタンの刻み</label><select data-cfg="step">'+[10,15,30,60].map(v=>'<option value="'+v+'"'+(s.step==v?' selected':'')+'>'+v+'秒</option>').join('')+'</select>'+
     '<button class="btn wide" style="margin-top:12px" data-act="testsc">ショートカットを試す</button></div></div>';
 
@@ -505,8 +544,9 @@ function vSet(){
   h+='<h2>データ</h2><div class="card"><div class="pad"><div class="row wrap">'+
     '<button class="btn sm" data-act="export">書き出す</button><button class="btn sm" data-act="import">読み込む</button>'+
     '<button class="btn sm ghost" data-act="wipe">全部消す</button></div>'+
+    '<button class="btn wide" style="margin-top:10px" data-act="backups">自動バックアップから復元</button>'+
     '<div class="small mute" style="margin-top:8px">記録はこの端末の中だけに保存されます。月に一度は書き出しておくと安心です。</div></div></div>'+
-    '<div class="small mute" style="text-align:center;margin:20px 0">RACK v2.0</div>';
+    '<div class="small mute" style="text-align:center;margin:20px 0">RACK v'+VER+'</div>';
   return h;
 }
 
@@ -548,6 +588,8 @@ function runShortcut(sec){
   else if(S.settings.scAfter==='back') url+='&x-success='+encodeURIComponent(location.href);
   try{ window.location.href=url; }catch(e){ toast('ショートカットを起動できませんでした'); }
 }
+const autoOn=()=>S.settings.autoTimer!==false;
+function autoRest(sec){ if(autoOn())startRest(sec); }
 function startRest(sec){
   sec=Math.max(5,Math.round(sec||S.settings.rest));
   runShortcut(sec);
@@ -574,7 +616,11 @@ function timerPanel(){
     '<button data-act="tbn" data-v="1">＋</button></div>'+
     '<div class="small mute" style="text-align:center;margin-top:6px">＋−は'+st+'秒きざみ</div>'+
     '<button class="btn red wide big" style="margin-top:14px" data-act="tgo">'+(T.h?'停止する':'この秒数で開始')+'</button>'+
-    '<div class="small mute" style="margin-top:10px">開始するとiPhoneのショートカットが動き、時計アプリのタイマーが鳴ります。</div>';
+    '<div class="row" style="margin-top:14px;align-items:flex-start">'+
+      '<div class="grow"><div style="font-weight:700">セット完了で自動的に開始</div>'+
+      '<div class="small mute">オフにすると、✓を押してもタイマーは動きません</div></div>'+
+      '<button class="btn sm '+(autoOn()?'fill':'ghost')+'" data-act="autotgl">'+(autoOn()?'オン':'オフ')+'</button></div>'+
+      '<div class="small mute" style="margin-top:12px">開始するとiPhoneのショートカットが動き、時計アプリのタイマーが鳴ります。</div>';
   sheet('レストタイマー',h);
 }
 
@@ -596,6 +642,7 @@ function drawFX(){
   $('#fxEx').textContent=e.name;
   $('#fxSet').textContent='セット '+(FX.j+1)+' / '+it.sets.length+(it.goal?'　'+it.goal:'');
   $('#fxKgI').value=s.kg||''; $('#fxRepI').value=s.reps||''; $('#fxRpeI').value=s.rpe||s.trpe||'';
+  $('#fxDoneBtn').textContent=autoOn()?'記録して休憩':'記録して次へ';
   paintFX();
 }
 function paintFX(){
@@ -616,7 +663,7 @@ function fxDone(skip){
   const it=S.active.items[FX.i],s=it.sets[FX.j];
   if(!skip){
     s.kg=+$('#fxKgI').value||0;s.reps=+$('#fxRepI').value||0;s.rpe=+$('#fxRpeI').value||'';
-    s.done=true;save();startRest(it.rest);
+    s.done=true;save();autoRest(it.rest);
   }
   const nx=next(FX.i,FX.j);
   if(!nx){$('#focus').classList.remove('on');render();toast('全セット完了');return;}
@@ -740,6 +787,42 @@ function drawPlan(){
 }
 const opts=sel=>'<option value="">未設定</option>'+S.menus.map(m=>'<option value="'+m.id+'"'+(m.id===sel?' selected':'')+'>'+esc(m.name)+'</option>').join('');
 
+function editLog(id){
+  const l=S.logs.find(x=>x.id===id);
+  let h='<div class="small mute">'+l.date+'　重量か回数を0にすると、そのセットは削除されます。</div>';
+  l.items.forEach((it,i)=>{
+    h+='<h2>'+esc(it.name)+'</h2><div class="sthead" style="grid-template-columns:18px 1fr 1fr 1fr"><span></span><span>重量 kg</span><span>回数</span><span>RPE</span></div>';
+    it.sets.forEach((st,j)=>{
+      h+='<div class="st" style="grid-template-columns:18px 1fr 1fr 1fr"><div class="idx num">'+(j+1)+'</div>'+
+        ['kg','reps','rpe'].map(f=>'<input class="num" style="text-align:center;font-weight:700" type="number" inputmode="decimal" data-le="'+f+'" data-i="'+i+'" data-j="'+j+'" value="'+(st[f]||'')+'">').join('')+'</div>';
+    });
+  });
+  h+='<button class="btn wide fill" style="margin-top:16px" data-act="savelog" data-id="'+l.id+'">保存する</button>';
+  sheet('記録を修正',h);
+}
+
+/* ========== 自動バックアップ ========== */
+const BK='rack.bk';
+function backups(){ try{return JSON.parse(localStorage.getItem(BK))||[];}catch(e){return [];} }
+function autoBackup(){
+  if(!S.logs.length)return;
+  const bs=backups(), last=bs[bs.length-1];
+  if(last && Date.now()-last.t < 7*864e5) return;
+  bs.push({t:Date.now(),d:JSON.stringify(S)});
+  while(bs.length>3)bs.shift();
+  try{ localStorage.setItem(BK,JSON.stringify(bs)); }
+  catch(e){ while(bs.length>1){ bs.shift(); try{localStorage.setItem(BK,JSON.stringify(bs));break;}catch(e2){} } }
+}
+function backupList(){
+  const bs=backups();
+  if(!bs.length)return '<div class="small mute">まだバックアップはありません。記録を1回つけると、そこから週1で自動的に保存されます。</div>';
+  return bs.slice().reverse().map(b=>{ const d=new Date(b.t), o=JSON.parse(b.d);
+    return '<div class="li"><div><div class="nm">'+d.toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'})+' '+
+      d.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})+'</div>'+
+      '<div class="mt">'+(o.logs||[]).length+'件の記録・'+(o.menus||[]).length+'メニュー</div></div>'+
+      '<button class="btn sm" style="margin-left:auto" data-act="restore" data-t="'+b.t+'">復元</button></div>'; }).join('');
+}
+
 /* ========== マニュアル ========== */
 const MAN=[
  ['start','はじめての3ステップ',
@@ -770,6 +853,8 @@ const MAN=[
   '<p>重量と回数は＋−ボタンで変えられます。キーボードを出さずに片手で操作できます。'+
   '右の<b>✓</b>を押すとそのセットが完了になり、休憩タイマーが自動で始まります。</p>'+
   '<div class="note"><b>前回◯◯kg×◯</b>種目名の右に、その種目の前回の実績が出ます。</div>'+
+  '<p>推奨重量が出ない補助種目は、<b>「前回と同じ」</b>を押すと前回の重量と回数がまとめて入ります。'+
+  'すでに✓を付けたセットは書き換わりません。</p>'+
   '<p>下の赤い「フォーカスで進める」を押すと、1セットずつの全画面になります。ジムではこちらが楽です。</p>'+
   '<img class="shot" src="man-focus.png" alt="フォーカス画面">'+
   '<p>バーに付けるプレートが色つきで出ます（赤25・青20・黄15・緑10・白5・黒2.5・銀1.25kg）。'+
@@ -791,6 +876,9 @@ const MAN=[
   '<li>設定タブの<b>「ショートカットを試す」</b>を押す。時計アプリが開いて90秒のタイマーが動けば成功</li>'+
   '</ol>'+
   '<img class="shot" src="man-timerset.png" alt="タイマー設定">'+
+  '<div class="note"><b>自動で開始したくないとき</b>'+
+  'タイマーパネルの「セット完了で自動的に開始」をオフにすると、✓を押してもタイマーは動きません。'+
+  '連続してセットを入力したいときや、ジム以外で記録を付けるときに使ってください。設定タブからも切り替えられます。</div>'+
   '<p>設定が終われば、あとはセットの<b>✓</b>を押すだけで自動的に休憩が始まります。'+
   '自分の好きな秒数で始めたいときは、画面右上の<b>タイマー</b>を押してください。</p>'+
   '<img class="shot" src="man-timer.png" alt="タイマーパネル">'+
@@ -812,12 +900,20 @@ const MAN=[
   'メニュー自体を作り直す必要はありません。</div>'+
   '<p>「今日」タブの「この日をとばす」で、進める位置だけ動かせます。</p>'],
  ['log','記録とバックアップ',
-  '<p>「記録」タブでは、種目ごとの<b>推定1RM</b>の推移が見られます。上のボタンで種目を切り替えます。</p>'+
+  '<p>「記録」タブでは、種目ごとの<b>推定1RM</b>の推移と、<b>週ごとの総ボリューム</b>が見られます。</p>'+
   '<img class="shot" src="man-log.png" alt="記録タブ">'+
   '<p>推定1RMは、実際に挙げた重量・回数・RPEから計算した「1回なら何kg挙がるか」です。'+
   '直近60日に記録があれば、この数字が推奨重量の基準になります。記録を重ねるほど自動で追従します。</p>'+
-  '<div class="note"><b>必ず書き出しておいてください</b>記録はこの端末のブラウザ内だけに保存されています。'+
-  '機種変更やSafariのデータ削除で消えます。設定タブの「書き出す」で月1回バックアップを取ってください。</div>']
+  '<p>総ボリュームは「重量×回数」を全種目で合計した数字です。月曜はじまりの週で集計しています。'+
+  '強度が変わらないのにボリュームだけ増え続けているときは、疲労がたまりやすい状態です。</p>'+
+  '<h3>記録を直す</h3>'+
+  '<p>履歴の記録をタップ →「この記録を修正する」で、重量・回数・RPEを後から直せます。'+
+  '重量か回数を0にして保存すると、そのセットは削除されます。</p>'+
+  '<h3>バックアップ</h3>'+
+  '<p>週に1回、アプリを開いたときに自動でバックアップが作られます（最新3件）。'+
+  '設定タブの「自動バックアップから復元」で、その時点に戻せます。</p>'+
+  '<div class="note"><b>それでも書き出しは必要です</b>自動バックアップもこの端末の中にあります。'+
+  '機種変更やSafariのデータ削除では一緒に消えるので、月に1回は設定タブの「書き出す」でファイルを保存してください。</div>']
 ];
 function manual(sec){
   const cur=sec||'start';
@@ -863,7 +959,7 @@ function act(t,ev){
   if(a==='skipday'){ const p=S.plans.find(x=>x.id===id);advance(p);render();return; }
   if(a==='chk'){ const r=t.closest('.st'),it=S.active.items[+r.dataset.i],s=it.sets[+r.dataset.j];
     s.done=!s.done;
-    if(s.done){ const ip=r.querySelectorAll('input'); s.kg=+ip[0].value||0;s.reps=+ip[1].value||0; save();render();startRest(it.rest); }
+    if(s.done){ const ip=r.querySelectorAll('input'); s.kg=+ip[0].value||0;s.reps=+ip[1].value||0; save();render();autoRest(it.rest); }
     else {save();render();} return; }
   if(a==='nudge'){ const r=t.closest('.st'),s=S.active.items[+r.dataset.i].sets[+r.dataset.j],f=t.dataset.f;
     const inp=r.querySelector('input[data-f="'+f+'"]');
@@ -872,6 +968,11 @@ function act(t,ev){
     inp.value=v?fmt(v):''; s[f]=v; save(); return; }
   if(a==='addset'){ const it=S.active.items[i],l=it.sets[it.sets.length-1]||{};
     it.sets.push({kg:l.kg||'',reps:l.reps||'',rpe:'',trpe:l.trpe||'',done:false});save();render();return; }
+  if(a==='same'){ const it=S.active.items[i],ls=lastSets(it.exId);
+    if(!ls){toast('前回の記録がありません');return;}
+    it.sets.forEach((s,j)=>{ if(s.done)return; const src=ls[Math.min(j,ls.length-1)];
+      s.kg=src.kg||'';s.reps=src.reps||''; });
+    save();render();toast('前回の重量を入れました');return; }
   if(a==='rmex'){ S.active.items.splice(i,1);save();render();return; }
   if(a==='addex'){ pickEx(ids=>{ (Array.isArray(ids)?ids:[ids]).forEach(x=>S.active.items.push(
       {exId:x,rest:EX(x).rest,goal:'自由',sets:[{kg:'',reps:'',rpe:'',done:false}]})); save();render(); },true);return; }
@@ -885,6 +986,11 @@ function act(t,ev){
     const stp=f==='kg'?(S.settings.round||2.5):f==='rpe'?0.5:1;
     let v=(+inp.value||0)+(+t.dataset.v)*stp; if(v<0)v=0; inp.value=v?fmt(v):''; paintFX(); return; }
   if(a==='timer'){ timerPanel();return; }
+  if(a==='autotgl'){ S.settings.autoTimer=!autoOn();save();timerPanel();return; }
+  if(a==='ver'){ sheet('バージョン','<div class="ttl">RACK v'+VER+'</div>'+
+    '<div class="small mute" style="margin-bottom:14px">この表示が最新でなければ、アップロードが反映されていません。</div>'+
+    CHANGES.map(c=>'<div class="li" style="display:block"><div class="nm">v'+c[0]+'</div><div class="mt" style="margin-top:3px">'+esc(c[1])+'</div></div>').join('')+
+    '<button class="btn wide ghost" style="margin-top:10px" data-act="manual">使い方を見る</button>');return; }
   if(a==='tpre'){ TB=+t.dataset.v;timerPanel();return; }
   if(a==='tbn'){ TB=Math.max(5,TB+(+t.dataset.v)*(S.settings.step||30));timerPanel();return; }
   if(a==='tgo'){ if(T.h){stopRest();}else{startRest(TB);} closeSheet();return; }
@@ -904,7 +1010,18 @@ function act(t,ev){
     sheet(l.title,'<div class="small mute">'+l.date+'</div>'+l.items.map(it=>'<h2>'+esc(it.name)+'</h2><table class="log">'+
       it.sets.map((s,n)=>'<tr><td>'+(n+1)+'</td><td>'+fmt(s.kg)+'kg × '+s.reps+(s.rpe?' @'+s.rpe:'')+'</td><td>'+
       fmt(Math.round(E1(s)*10)/10)+'kg</td></tr>').join('')+'</table>').join('')+
-      '<button class="btn wide ghost" style="margin-top:18px" data-act="dellog" data-id="'+l.id+'">この記録を削除</button>');return; }
+      '<button class="btn wide" style="margin-top:18px" data-act="editlog" data-id="'+l.id+'">この記録を修正する</button>'+
+      '<button class="btn wide ghost" style="margin-top:8px" data-act="dellog" data-id="'+l.id+'">この記録を削除</button>');return; }
+  if(a==='editlog'){ editLog(id);return; }
+  if(a==='savelog'){ const l=S.logs.find(x=>x.id===id);
+    $('#shBody').querySelectorAll('[data-le]').forEach(el=>{
+      const st=l.items[+el.dataset.i].sets[+el.dataset.j];
+      st[el.dataset.le]=+el.value||0; });
+    l.items.forEach(it=>it.sets=it.sets.filter(x=>x.kg&&x.reps));
+    l.items=l.items.filter(it=>it.sets.length);
+    l.volume=0;l.items.forEach(it=>it.sets.forEach(x=>l.volume+=x.kg*x.reps));
+    if(!l.items.length)S.logs=S.logs.filter(x=>x.id!==l.id);
+    save();closeSheet();render();toast('修正しました');return; }
   if(a==='dellog'){ if(confirm('削除しますか？')){S.logs=S.logs.filter(x=>x.id!==id);save();closeSheet();render();} return; }
   if(a==='rmall'){ sheet('基準1RM',S.exercises.map(e=>'<label class="f">'+esc(e.name)+'</label>'+
     '<input type="number" step="2.5" data-rm="'+e.id+'" value="'+(S.oneRM[e.id]||'')+'">').join(''));return; }
@@ -922,6 +1039,14 @@ function act(t,ev){
           if(e._new){delete e._new;S.exercises.push(e);} save();closeSheet();render(); };
         if(id)$('#exD').onclick=()=>{ if(confirm('削除しますか？（過去の記録は残ります）')){S.exercises=S.exercises.filter(x=>x.id!==id);save();closeSheet();render();} };
       });return; }
+  if(a==='restore'){ const b=backups().find(x=>String(x.t)===t.dataset.t); if(!b)return;
+    if(!confirm('この時点のデータに戻します。いまの記録は上書きされます。よろしいですか？'))return;
+    try{ load2(JSON.parse(b.d)); save(); render(); closeSheet(); toast('復元しました'); }catch(e){ toast('復元できませんでした'); }
+    return; }
+  if(a==='backups'){ sheet('自動バックアップ',
+    '<div class="small mute" style="margin-bottom:12px">週に1回、アプリを開いたときに自動で保存されます（最新3件）。'+
+    'この端末の中に保存されるため、機種変更やSafariのデータ削除では消えます。念のため月1回は「書き出す」も使ってください。</div>'+
+    backupList());return; }
   if(a==='export'){ const b=new Blob([JSON.stringify(S)],{type:'application/json'}),u=URL.createObjectURL(b),l=document.createElement('a');
     l.href=u;l.download='rack-'+todayStr()+'.json';l.click();setTimeout(()=>URL.revokeObjectURL(u),1000);toast('書き出しました');return; }
   if(a==='import'){ const inp=document.createElement('input');inp.type='file';inp.accept='.json,application/json';
@@ -993,12 +1118,13 @@ document.addEventListener('input',ev=>{
   if(el.dataset.rm){ S.oneRM[el.dataset.rm]=+el.value||0;save();return; }
   if(el.dataset.preset!=null){ S.settings.presets[+el.dataset.preset]=parseTimeText(el.value);save();return; }
   if(el.dataset.cfg){ const c=el.dataset.cfg;
-    S.settings[c]=(c==='scName'||c==='scAfter')?el.value:(+el.value||(c==='round'?2.5:0));save();return; }
+    S.settings[c]=(c==='scName'||c==='scAfter')?el.value:c==='autoTimer'?el.value==='1':(+el.value||(c==='round'?2.5:0));
+    save();return; }
 });
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden&&T.h)tick(); });
 
 /* 起動 */
-load(); TAB='today'; render();
+load(); autoBackup(); TAB='today'; document.getElementById('ver').textContent='v'+VER; render();
 if(!S.tour&&!S.menus.length&&!S.logs.length) setTimeout(tour,400);
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 </script>
