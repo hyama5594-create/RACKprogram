@@ -247,8 +247,9 @@ table.log td:last-child{text-align:right;font-weight:700}
 
 <script>
 'use strict';
-const VER='2.3';
-const CHANGES=[['2.3','✓を押しても画面が先頭に戻らないよう修正 / 次にやるセットを赤く表示 / フォーカス中に残り時間を表示'],
+const VER='2.4';
+const CHANGES=[['2.4','推奨重量が勝手に上がり続ける問題を修正 / ダンベル等の重量刻みを種目ごとに / 終了・とばすに確認 / 書き出しを共有シートに / 途中のセッションの扱い / 週ボリュームを暦どおりに ほか'],
+ ['2.3','✓を押しても画面が先頭に戻らないよう修正 / 次にやるセットを赤く表示 / フォーカス中に残り時間を表示'],
  ['2.2','「前回と同じ」ボタン / 記録の修正 / 週1の自動バックアップと復元 / 週ごとの総ボリューム'],
  ['2.1','セット完了時にタイマーを自動で開くかどうかを選べるようにした / 右上にバージョンを表示'],
  ['2.0','起動時は必ず「今日」から / メニュー作成を1行構成に簡略化 / ＋−ボタンで入力 / プランに統合 / iPhone標準タイマー連携 / 画面つきマニュアル'],
@@ -271,8 +272,26 @@ function rpePct(reps,rpe){
   return RPE[k][r-1];
 }
 const e1rm=(kg,reps,rpe)=>(!kg||!reps)?0:kg/(rpePct(reps,rpe||10)/100);
-/* 実績セットの推定1RM：入力RPE → 目標RPE → 9 の順で採用 */
-const E1=s=>e1rm(+s.kg||0,+s.reps||0,+s.rpe||+s.t||9);
+/* 逆引き：その回数でこの%ならRPEいくつか（6〜10・0.5刻み、表の範囲外は0） */
+function pctToRpe(reps,pct){
+  const r=Math.min(12,Math.max(1,Math.round(reps||1)))-1;
+  if(!pct||pct<RPE[6][r]-1.5||pct>RPE[10][r]+1.5)return 0;
+  let best=0,diff=1e9;
+  Object.keys(RPE).forEach(k=>{const d=Math.abs(RPE[k][r]-pct);if(d<diff){diff=d;best=+k;}});
+  return best;
+}
+/* 実績セットの推定1RM
+   ① RPEを入力していればそれを使う
+   ② 入力がなければ「アプリが処方した%（tp）」を使う＝処方どおりなら基準は動かない
+   ③ 旧データは目標RPE（t）を使う　④ どれも無ければ推定しない（0） */
+const E1=s=>{
+  const kg=+s.kg||0,reps=+s.reps||0; if(!kg||!reps)return 0;
+  if(+s.rpe)return e1rm(kg,reps,+s.rpe);
+  if(+s.tp){ if(!+s.tr||+s.tr===reps)return kg/(+s.tp/100);
+    const r=pctToRpe(+s.tr,+s.tp); return r?e1rm(kg,reps,r):kg/(+s.tp/100); }
+  if(+s.t)return e1rm(kg,reps,+s.t);
+  return 0;
+};
 
 /* ========== 保存 ========== */
 const KEY='rack.v1', uid=()=>Math.random().toString(36).slice(2,9);
@@ -288,17 +307,26 @@ function defaults(){
     exercises:ex,menus:[],plans:[],logs:[],active:null,tour:false};
 }
 let S, TAB='today';
-function load(){
-  try{ S=JSON.parse(localStorage.getItem(KEY))||defaults(); }catch(e){ S=defaults(); }
+function normalize(){
   const d=defaults();
+  if(!S||typeof S!=='object')S=d;
   for(const k of ['exercises','menus','plans','logs']) if(!Array.isArray(S[k]))S[k]=[];
+  if(!S.exercises.length)S.exercises=d.exercises;
   S.settings=Object.assign({},d.settings,S.settings||{});
   if(!Array.isArray(S.settings.presets)||S.settings.presets.length!==3)S.settings.presets=[90,180,300];
-  if(!S.oneRM)S.oneRM={};
-  migrate();
+  if(!S.oneRM||typeof S.oneRM!=='object')S.oneRM={};
+  if(!S.rmAt||typeof S.rmAt!=='object')S.rmAt={};
+  S.menus.forEach(m=>{ if(!Array.isArray(m.items))m.items=[]; });
+  S.plans.forEach(p=>{ if(!Array.isArray(p.days))p.days=[]; if(!Array.isArray(p.weeks)||!p.weeks.length)p.weeks=[{label:'—',scale:100}]; });
+  S.logs=S.logs.filter(l=>l&&Array.isArray(l.items)&&l.date);
+  if(S.active&&!Array.isArray(S.active.items))S.active=null;
+}
+function load(){
+  try{ S=JSON.parse(localStorage.getItem(KEY))||defaults(); }catch(e){ S=defaults(); }
+  migrate(); normalize();
 }
 function migrate(){
-  if(S.v===2)return;
+  if(!S||S.v===2)return;
   // v1: routines / programs → plans, menu.items[].sets → groups
   (S.menus||[]).forEach(m=>m.items.forEach(it=>{
     if(it.groups)return;
@@ -324,6 +352,8 @@ const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),1800);}
 const fmt=n=>(Math.round(n*100)/100).toString();
+const stepOf=exId=>{const e=EX(exId);return +e.step||(e.bar?(+S.settings.round||2.5):1);};
+const roundFor=(k,exId)=>{const st=stepOf(exId);return Math.max(0,Math.round(k/st)*st);};
 const roundKg=k=>Math.max(0,Math.round(k/(S.settings.round||2.5))*(S.settings.round||2.5));
 const mmss=s=>Math.floor(s/60)+':'+String(Math.max(0,s%60)).padStart(2,'0');
 function parseTimeText(t){
@@ -332,20 +362,31 @@ function parseTimeText(t){
   const n=+t||0; return n<=20?n*60:n;
 }
 
-/* 基準1RM：直近60日のログ優先 */
-function baseRM(exId){
-  const lim=Date.now()-60*864e5; let best=0;
-  S.logs.forEach(l=>{ if(new Date(l.date).getTime()<lim)return;
+/* 基準1RM：直近60日のログ優先。ただし手動で1RMを変えたら、それ以降の記録だけを見る */
+const logTime=l=>+l.ts||new Date(l.date+'T00:00:00').getTime();
+function baseSrc(exId){
+  const since=Math.max(Date.now()-60*864e5,(S.rmAt&&S.rmAt[exId])||0); let best=0;
+  S.logs.forEach(l=>{ if(logTime(l)<since)return;
     l.items.forEach(it=>{ if(it.exId!==exId)return;
-      it.sets.forEach(s=>{ if(s.kg&&s.reps)best=Math.max(best,E1(s)); }); }); });
-  return best||S.oneRM[exId]||0;
+      it.sets.forEach(x=>{ if(x.kg&&x.reps)best=Math.max(best,E1(x)); }); }); });
+  return best?{v:best,from:'log'}:{v:S.oneRM[exId]||0,from:'manual'};
 }
+function baseRM(exId){ return baseSrc(exId).v; }
 function gTarget(g,exId,scale){
   const sc=(scale==null?100:scale)/100;
-  if(g.mode==='kg')return g.kg?roundKg(g.kg*sc):0;
+  if(g.mode==='kg')return g.kg?(sc===1?+g.kg:roundFor(g.kg*sc,exId)):0;
   const b=baseRM(exId); if(!b)return 0;
-  if(g.mode==='pct')return roundKg(b*(g.pct||0)/100*sc);
-  return roundKg(b*rpePct(g.reps,g.rpe||8)/100*sc);
+  if(g.mode==='pct')return roundFor(b*(g.pct||0)/100*sc,exId);
+  return roundFor(b*rpePct(g.reps,g.rpe||8)/100*sc,exId);
+}
+/* 週の%で重くしたときの表示：RPE指定なら「今週はRPEいくつ目安か」を出す */
+function goalFor(g,exId,scale){
+  let t=gLabel(g); const sc=scale==null?100:scale;
+  if(sc===100)return t;
+  if(g.mode==='rpe'){ const r=pctToRpe(g.reps,rpePct(g.reps,g.rpe||8)*sc/100);
+    return t+'（今週'+sc+'%'+(r?'・RPE'+r+'目安':'')+'）'; }
+  if(g.mode==='pct')return t+'（今週'+fmt((g.pct||0)*sc/100)+'%）';
+  return t+'（今週'+sc+'%）';
 }
 const gLabel=g=>g.sets+'セット × '+(g.reps||'?')+'回 '+(g.mode==='kg'?(g.kg||0)+'kg':g.mode==='pct'?(g.pct||0)+'%':'RPE'+(g.rpe||8));
 function lastKg(exId){
@@ -402,6 +443,7 @@ function planNext(p){
 function vToday(){
   if(S.active)return vSession();
   let h='';
+  const broken=S.plans.filter(p=>{const n=planNext(p);return !n||!n.menu;});
   const nx=S.plans.map(p=>({p,n:planNext(p)})).filter(x=>x.n&&x.n.menu)[0];
   if(nx){
     const{p,n}=nx, sc=n.w.deload?Math.min(n.w.scale||100,90):(n.w.scale||100);
@@ -422,13 +464,35 @@ function vToday(){
       '<button class="btn red wide big" style="margin-top:14px" data-act="newmenu">メニューを作る</button>'+
       '<button class="btn ghost wide sm" style="margin-top:8px" data-act="manual">使い方を見る</button></div></div>';
   }
+  broken.forEach(p=>{ const d=p.days[p.curD||0];
+    h+='<div class="card" style="border-color:var(--red)"><div class="pad"><div style="font-weight:700">プラン「'+esc(p.name)+'」の'+
+      esc(d?d.label:'次の日')+'にメニューが設定されていません</div>'+
+      '<div class="sub">メニューを削除したか、未設定のままです</div>'+
+      '<button class="btn sm" style="margin-top:8px" data-act="editplan" data-id="'+p.id+'">プランを直す</button></div></div>'; });
+  const ex=S.lastExport||0;
+  if(S.logs.length>=3&&Date.now()-ex>30*864e5){
+    h+='<div class="card"><div class="pad"><div style="font-weight:700">'+(ex?'前回の書き出しから30日たちました':'まだ一度も書き出していません')+'</div>'+
+      '<div class="sub">機種変更やデータ削除に備えて、記録をファイルに保存しておきましょう</div>'+
+      '<button class="btn sm" style="margin-top:8px" data-act="export">いま書き出す</button></div></div>';
+  }
   h+='<h2>直近の記録</h2>'+recent(3);
   return h;
 }
 function vSession(){
   const a=S.active; let tot=0,dn=0,vol=0;
   a.items.forEach(it=>it.sets.forEach(s=>{tot++;if(s.done){dn++;vol+=(+s.kg||0)*(+s.reps||0);}}));
-  let h='<div class="card hero"><div class="pad"><div class="ttl">'+esc(a.title)+'</div>'+
+  let h='';
+  if(a.date!==todayStr()){
+    const d=a.date.slice(5).replace('-','/').replace(/^0/,'');
+    h+='<div class="card" style="border:2px solid var(--red)"><div class="pad">'+
+      '<div class="ttl" style="font-size:15px">'+d+'のセッションが終わっていません</div>'+
+      '<div class="sub">どうするか選んでください</div>'+
+      '<div class="row wrap" style="margin-top:10px">'+
+      '<button class="btn sm fill" data-act="stalefin">'+d+'の記録として終了</button>'+
+      '<button class="btn sm" data-act="staletoday">今日の分として続ける</button>'+
+      '<button class="btn sm ghost" data-act="cancel">破棄</button></div></div></div>';
+  }
+  h+='<div class="card hero"><div class="pad"><div class="ttl">'+esc(a.title)+'</div>'+
     '<div class="sub">'+dn+' / '+tot+' セット　ボリューム '+Math.round(vol)+'kg</div>'+
     '<div class="bar"><i style="width:'+(tot?dn/tot*100:0)+'%"></i></div></div></div>';
   a.items.forEach((it,i)=>{
@@ -500,18 +564,22 @@ function weekStart(dstr){
 function volChart(){
   const m={};
   S.logs.forEach(l=>{ const k=weekStart(l.date); m[k]=(m[k]||0)+(l.volume||0); });
-  const ks=Object.keys(m).sort().slice(-10);
-  if(!ks.length)return '';
+  if(!Object.keys(m).length)return '';
+  const ks=[]; const cur=new Date(weekStart(todayStr())+'T00:00:00');
+  for(let i=9;i>=0;i--){ const d=new Date(cur); d.setDate(d.getDate()-7*i);
+    ks.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')); }
+  ks.forEach(k=>{ if(!(k in m))m[k]=0; });
   const vs=ks.map(k=>m[k]), mx=Math.max.apply(null,vs)||1;
   const W=320,H=120,P=16,bw=(W-P*2)/ks.length*0.62, gap=(W-P*2)/ks.length;
   const bars=ks.map((k,i)=>{ const h=(vs[i]/mx)*(H-30);
     return '<rect x="'+(P+i*gap+(gap-bw)/2).toFixed(1)+'" y="'+(H-14-h).toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h.toFixed(1)+'" fill="#D50032" rx="2"/>'; }).join('');
   const labs=ks.map((k,i)=>'<text x="'+(P+i*gap+gap/2).toFixed(1)+'" y="'+(H-3)+'" font-size="8" fill="#666B72" text-anchor="middle">'+k.slice(5).replace('-','/')+'</text>').join('');
-  const now=vs[vs.length-1], prev=vs.length>1?vs[vs.length-2]:0;
+  const now=vs[vs.length-1], prev=vs[vs.length-2]||0;
   return '<div class="card"><div class="pad">'+
     '<div class="row" style="align-items:baseline;gap:8px"><div class="num" style="font-size:26px;font-weight:900;letter-spacing:-.04em">'+
     Math.round(now).toLocaleString()+'<span style="font-size:13px"> kg</span></div>'+
-    '<div class="small mute">今週の総ボリューム'+(prev?'　前週比 '+(now>=prev?'+':'')+Math.round((now/prev-1)*100)+'%':'')+'</div></div>'+
+    '<div class="small mute">今週の総ボリューム　先週 '+Math.round(prev).toLocaleString()+'kg'+
+    (now&&prev?'（'+(now>=prev?'+':'')+Math.round((now/prev-1)*100)+'%）':'')+'</div></div>'+
     '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;margin-top:6px">'+bars+labs+'</svg>'+
     '<div class="small mute">週ごとの総挙上量（重量×回数の合計・全種目）</div></div></div>';
 }
@@ -523,7 +591,8 @@ function chart(exId){
   });
   if(!pts.length)return '<div class="mute small">この種目の記録はまだありません。</div>';
   const W=320,H=130,P=22, vs=pts.map(p=>p.v), mn=Math.min(...vs)*.96, mx=Math.max(...vs)*1.04, rg=(mx-mn)||1;
-  const X=i=>pts.length===1?W/2:P+i*(W-P*2)/(pts.length-1), Y=v=>H-P-(v-mn)/rg*(H-P*2);
+  const tt=pts.map(p=>new Date(p.d+'T00:00:00').getTime()), t0=tt[0], tr=(tt[tt.length-1]-t0)||1;
+  const X=i=>pts.length===1?W/2:P+(tt[i]-t0)/tr*(W-P*2), Y=v=>H-P-(v-mn)/rg*(H-P*2);
   const line=pts.map((p,i)=>(i?'L':'M')+X(i).toFixed(1)+' '+Y(p.v).toFixed(1)).join(' ');
   const f=pts[0],l=pts[pts.length-1];
   return '<div class="row" style="align-items:baseline;gap:8px"><div class="num" style="font-size:31px;font-weight:900;letter-spacing:-.04em">'+
@@ -554,9 +623,12 @@ function vSet(){
     '<button class="btn wide" style="margin-top:12px" data-act="testsc">ショートカットを試す</button></div></div>';
 
   h+='<h2>基準1RM</h2><div class="card"><div class="pad">'+
-    '<div class="small mute">直近60日に記録がある種目は、そのログから計算した推定1RMが優先されます。</div>';
+    '<div class="small mute">推奨重量はこの基準から計算します。記録が増えると自動で更新されます。'+
+    '<b style="color:var(--ink)">ここを書き換えると、その値から数え直します。</b></div>';
   S.exercises.filter(e=>e.big3).forEach(e=>{
-    h+='<label class="f">'+esc(e.name)+'</label><input type="number" inputmode="decimal" step="2.5" data-rm="'+e.id+'" value="'+(S.oneRM[e.id]||'')+'">'; });
+    const src=baseSrc(e.id);
+    h+='<label class="f">'+esc(e.name)+'</label><input type="number" inputmode="decimal" step="2.5" data-rm="'+e.id+'" value="'+(S.oneRM[e.id]||'')+'">'+
+      '<div class="small mute" data-rmsrc="'+e.id+'" style="margin-top:4px">いまの基準：'+(src.v?fmt(Math.round(src.v*10)/10)+'kg（'+(src.from==='log'?'記録から計算':'この値')+'）':'未設定')+'</div>'; });
   h+='<button class="btn sm ghost" style="margin-top:10px" data-act="rmall">BIG3以外も入力する</button></div></div>';
 
   h+='<h2>重量の丸めとバー</h2><div class="card"><div class="pad">'+
@@ -572,7 +644,8 @@ function vSet(){
     '<button class="btn sm" data-act="export">書き出す</button><button class="btn sm" data-act="import">読み込む</button>'+
     '<button class="btn sm ghost" data-act="wipe">全部消す</button></div>'+
     '<button class="btn wide" style="margin-top:10px" data-act="backups">自動バックアップから復元</button>'+
-    '<div class="small mute" style="margin-top:8px">記録はこの端末の中だけに保存されます。月に一度は書き出しておくと安心です。</div></div></div>'+
+    '<div class="small mute" style="margin-top:8px">記録はこの端末の中だけに保存されます。月に一度は書き出しておくと安心です。'+
+    (S.lastExport?'<br>前回の書き出し：'+new Date(S.lastExport).toLocaleDateString('ja-JP'):'<br>まだ書き出していません')+'</div></div></div>'+
     '<div class="small mute" style="text-align:center;margin:20px 0">RACK v'+VER+'</div>';
   return h;
 }
@@ -581,11 +654,15 @@ function vSet(){
 function startSession(menuObj,scale,title,src){
   const items=menuObj.items.map(it=>{
     const sets=[];
-    (it.groups||[]).forEach(g=>{ const tk=gTarget(g,it.exId,scale)||lastKg(it.exId);
-      for(let n=0;n<(g.sets||1);n++) sets.push({kg:tk||'',reps:g.reps||'',rpe:'',trpe:g.mode==='rpe'?(g.rpe||''):'',done:false});
+    const b=baseRM(it.exId), sc=scale==null?100:scale;
+    (it.groups||[]).forEach(g=>{
+      const tk=gTarget(g,it.exId,scale)||lastKg(it.exId);
+      const tp=(b&&tk)?tk/b*100:0;
+      const trpe=(g.mode==='rpe'&&sc===100)?(g.rpe||8):pctToRpe(g.reps,tp);
+      for(let n=0;n<(g.sets||1);n++) sets.push({kg:tk||'',reps:g.reps||'',rpe:'',trpe:trpe||'',tp:tp,tr:g.reps||0,done:false});
     });
     return {exId:it.exId,rest:it.rest||EX(it.exId).rest||S.settings.rest,
-      goal:(it.groups||[]).map(g=>gLabel(g)).join(' / '),sets:sets};
+      goal:(it.groups||[]).map(g=>goalFor(g,it.exId,scale)).join(' / '),sets:sets};
   });
   S.active={date:todayStr(),title:title,source:src||null,items:items};
   save();render(true);
@@ -593,12 +670,14 @@ function startSession(menuObj,scale,title,src){
 function finish(){
   const a=S.active;
   const items=a.items.map(it=>({exId:it.exId,name:EX(it.exId).name,
-    sets:it.sets.filter(s=>s.done).map(s=>({kg:+s.kg||0,reps:+s.reps||0,rpe:+s.rpe||0,t:+s.trpe||0}))})).filter(i=>i.sets.length);
-  if(!items.length){ if(!confirm('完了したセットがありません。破棄しますか？'))return; S.active=null;save();render();return; }
+    sets:it.sets.filter(s=>s.done).map(s=>({kg:+s.kg||0,reps:+s.reps||0,rpe:+s.rpe||0,t:+s.trpe||0,tp:+s.tp||0,tr:+s.tr||0}))})).filter(i=>i.sets.length);
+  if(!items.length){ if(!confirm('完了したセットがありません。このセッションを破棄しますか？'))return; S.active=null;save();render(true);return; }
+  const left=a.items.reduce((n,it)=>n+it.sets.filter(x=>!x.done).length,0);
+  if(left&&!confirm('まだ'+left+'セット残っています。\nここで終了して、終わった分だけ記録しますか？'))return;
   let vol=0; items.forEach(i=>i.sets.forEach(s=>vol+=s.kg*s.reps));
-  S.logs.push({id:uid(),date:a.date,title:a.title,items:items,volume:vol});
+  S.logs.push({id:uid(),date:a.date,ts:Date.now(),title:a.title,items:items,volume:vol});
   if(a.source){ const p=S.plans.find(x=>x.id===a.source); if(p)advance(p); }
-  S.active=null;save();TAB='log';render(true);toast('記録しました');
+  S.active=null;save();autoBackup();TAB='log';render(true);toast('記録しました');
 }
 function advance(p){
   let d=(p.curD||0)+1, w=p.curW||0;
@@ -616,7 +695,13 @@ function runShortcut(sec){
   try{ window.location.href=url; }catch(e){ toast('ショートカットを起動できませんでした'); }
 }
 const autoOn=()=>S.settings.autoTimer!==false;
-function autoRest(sec){ if(autoOn())startRest(sec); }
+let lastAuto=0;
+const allDone=()=>!!S.active&&S.active.items.every(it=>it.sets.every(x=>x.done));
+function autoRest(sec){
+  if(!autoOn()||allDone())return;               // 最後のセットでは休憩不要
+  if(Date.now()-lastAuto<20000)return;         // 20秒以内の連続✓はまとめ入力とみなす
+  lastAuto=Date.now(); startRest(sec);
+}
 function startRest(sec){
   sec=Math.max(5,Math.round(sec||S.settings.rest));
   runShortcut(sec);
@@ -834,6 +919,21 @@ function editLog(id){
   sheet('記録を修正',h);
 }
 
+/* ========== 書き出し：iPhoneのホーム画面アプリでも保存できるよう共有シートを優先 ========== */
+async function exportData(){
+  const name='rack-'+todayStr()+'.json', txt=JSON.stringify(S);
+  try{
+    const f=new File([txt],name,{type:'application/json'});
+    if(navigator.canShare&&navigator.canShare({files:[f]})){
+      await navigator.share({files:[f],title:'RACK バックアップ'});
+      S.lastExport=Date.now();save();render();toast('書き出しました');return;
+    }
+  }catch(e){ if(e&&e.name==='AbortError'){toast('キャンセルしました');return;} }
+  const b=new Blob([txt],{type:'application/json'}),u=URL.createObjectURL(b),l=document.createElement('a');
+  l.href=u;l.download=name;document.body.appendChild(l);l.click();l.remove();setTimeout(()=>URL.revokeObjectURL(u),3000);
+  S.lastExport=Date.now();save();render();toast('書き出しました');
+}
+
 /* ========== 自動バックアップ ========== */
 const BK='rack.bk';
 function backups(){ try{return JSON.parse(localStorage.getItem(BK))||[];}catch(e){return [];} }
@@ -878,6 +978,8 @@ const MAN=[
   '<b style="font-weight:700">RPE</b> …「あと何回できるか」で決める。RPE8＝あと2回。推奨重量が自動で出ます。<br>'+
   '<b style="font-weight:700">%1RM</b> … 1RMに対する割合。<br>'+
   '<b style="font-weight:700">重量を直接</b> … kgを固定。</div>'+
+  '<div class="note"><b>ダンベルやマシンの重さの刻み</b>バーベル種目は2.5kg刻み、それ以外は1kg刻みで推奨重量を出します。'+
+  '2kg刻みのダンベルや5kg刻みのマシンは、設定タブ →「種目マスタ」→ 種目をタップ →「重量の刻み」で変えられます。</div>'+
   '<p>ピラミッド（重量を変えながら上げていく）をやりたいときは「＋セット構成」を押して行を増やします。'+
   '例：<b>3セット×5回 RPE8</b> ＋ <b>1セット×3回 90%</b>。</p>'],
  ['today','今日のトレーニング',
@@ -889,6 +991,10 @@ const MAN=[
   '<div class="note"><b>前回◯◯kg×◯</b>種目名の右に、その種目の前回の実績が出ます。</div>'+
   '<p>推奨重量が出ない補助種目は、<b>「前回と同じ」</b>を押すと前回の重量と回数がまとめて入ります。'+
   'すでに✓を付けたセットは書き換わりません。</p>'+
+  '<div class="note"><b>「終了」を押したとき</b>まだ残っているセットがあると、確認が出ます。'+
+  '「OK」で終わった分だけ記録され、プランは次の日に進みます。</div>'+
+  '<div class="note"><b>前の日のセッションが残っていたら</b>今日の画面の一番上に赤い枠で出ます。'+
+  '「その日の記録として終了」「今日の分として続ける」「破棄」から選んでください。</div>'+
   '<p>下の赤い「フォーカスで進める」を押すと、1セットずつの全画面になります。ジムではこちらが楽です。</p>'+
   '<img class="shot" src="man-focus.png" alt="フォーカス画面">'+
   '<p>バーに付けるプレートが色つきで出ます（赤25・青20・黄15・緑10・白5・黒2.5・銀1.25kg）。'+
@@ -910,6 +1016,9 @@ const MAN=[
   '<li>設定タブの<b>「ショートカットを試す」</b>を押す。時計アプリが開いて90秒のタイマーが動けば成功</li>'+
   '</ol>'+
   '<img class="shot" src="man-timerset.png" alt="タイマー設定">'+
+  '<div class="note"><b>タイマーが動かない場面</b>'+
+  'その日の<b>最後のセット</b>を✓したとき（もう休憩はいらないので）と、'+
+  '<b>20秒以内に続けて✓</b>したとき（あとからまとめて入力している、と判断します）はタイマーを起動しません。</div>'+
   '<div class="note"><b>自動で開始したくないとき</b>'+
   'タイマーパネルの「セット完了で自動的に開始」をオフにすると、✓を押してもタイマーは動きません。'+
   '連続してセットを入力したいときや、ジム以外で記録を付けるときに使ってください。設定タブからも切り替えられます。</div>'+
@@ -932,22 +1041,33 @@ const MAN=[
   '<li>最終週の最後の日が終わると、自動で1週目に戻ります</li></ol>'+
   '<div class="note"><b>係数の意味</b>102.5%の週は、推奨重量がすべて1.025倍になります。'+
   'メニュー自体を作り直す必要はありません。</div>'+
+  '<div class="note"><b>RPEで決めるセットの場合</b>「RPE8」のメニューを105%の週にやると、重さが上がるぶん実際のきつさも上がります。'+
+  'その週は目標のところに<b>「今週105%・RPE9目安」</b>のように、その重さに見合ったRPEが出ます。'+
+  'フォーカス画面のRPE欄にもこの目安が最初から入ります。</div>'+
   '<p>「今日」タブの「この日をとばす」で、進める位置だけ動かせます。</p>'],
  ['log','記録とバックアップ',
   '<p>「記録」タブでは、種目ごとの<b>推定1RM</b>の推移と、<b>週ごとの総ボリューム</b>が見られます。</p>'+
   '<img class="shot" src="man-log.png" alt="記録タブ">'+
   '<p>推定1RMは、実際に挙げた重量・回数・RPEから計算した「1回なら何kg挙がるか」です。'+
-  '直近60日に記録があれば、この数字が推奨重量の基準になります。記録を重ねるほど自動で追従します。</p>'+
-  '<p>総ボリュームは「重量×回数」を全種目で合計した数字です。月曜はじまりの週で集計しています。'+
+  '直近60日に記録があれば、この数字が推奨重量の基準になります。</p>'+
+  '<div class="note"><b>基準が上がるのは、強くなった証拠があるときだけ</b>'+
+  '・RPEを入れた → そのRPEで計算します（RPE8のつもりがRPE7だった、なら基準が上がります）<br>'+
+  '・RPEを入れていない → アプリの指定どおりの重さ・回数なら基準は変わりません。指定より重く・多くできた分だけ上がります<br>'+
+  'つまり、<b>RPEをこまめに入れるほど推奨重量が正確になります。</b></div>'+
+  '<div class="note"><b>基準をリセットしたいとき</b>設定タブの「基準1RM」を書き換えると、その値から数え直します。'+
+  '試合で新しい1RMが出たときや、しばらく休んで落ちたときに使ってください。</div>'+
+  '<p>総ボリュームは「重量×回数」を全種目で合計した数字です。月曜はじまりの週で集計し、休んだ週は0として表示します。'+
   '強度が変わらないのにボリュームだけ増え続けているときは、疲労がたまりやすい状態です。</p>'+
   '<h3>記録を直す</h3>'+
   '<p>履歴の記録をタップ →「この記録を修正する」で、重量・回数・RPEを後から直せます。'+
   '重量か回数を0にして保存すると、そのセットは削除されます。</p>'+
   '<h3>バックアップ</h3>'+
-  '<p>週に1回、アプリを開いたときに自動でバックアップが作られます（最新3件）。'+
+  '<p>最初の記録のすぐ後と、その後は週に1回、自動でバックアップが作られます（最新3件）。'+
   '設定タブの「自動バックアップから復元」で、その時点に戻せます。</p>'+
   '<div class="note"><b>それでも書き出しは必要です</b>自動バックアップもこの端末の中にあります。'+
-  '機種変更やSafariのデータ削除では一緒に消えるので、月に1回は設定タブの「書き出す」でファイルを保存してください。</div>']
+  '機種変更やSafariのデータ削除では一緒に消えるので、月に1回は設定タブの「書き出す」でファイルを保存してください。'+
+  '「書き出す」を押すと共有メニューが開くので、<b>「"ファイル"に保存」</b>を選べばiPhone内やiCloud Driveに残せます。'+
+  '30日書き出していないと、今日の画面にお知らせが出ます。</div>']
 ];
 function manual(sec){
   const cur=sec||'start';
@@ -990,7 +1110,9 @@ function act(t,ev){
     if(!n||!n.menu){toast('この日にメニューが設定されていません');return;}
     const sc=n.w.deload?Math.min(n.w.scale||100,90):(n.w.scale||100);
     startSession(n.menu,sc,(p.weeks.length>1?n.w.label+' ':'')+n.d.label+'　'+n.menu.name,p.id);return; }
-  if(a==='skipday'){ const p=S.plans.find(x=>x.id===id);advance(p);render();return; }
+  if(a==='skipday'){ const p=S.plans.find(x=>x.id===id),n=planNext(p);
+    if(!confirm((n?n.d.label+'（'+(n.menu?n.menu.name:'')+'）':'この日')+'をとばして、次の日に進めますか？\n戻したいときは「組む」→プラン→「次にやるところ」で直せます。'))return;
+    advance(p);render();toast('次の日に進めました');return; }
   if(a==='chk'){ const r=t.closest('.st'),it=S.active.items[+r.dataset.i],s=it.sets[+r.dataset.j];
     if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();
     s.done=!s.done; r.classList.toggle('done',s.done);
@@ -1001,7 +1123,7 @@ function act(t,ev){
     return; }
   if(a==='nudge'){ const r=t.closest('.st'),s=S.active.items[+r.dataset.i].sets[+r.dataset.j],f=t.dataset.f;
     const inp=r.querySelector('input[data-f="'+f+'"]');
-    const stp=f==='kg'?(S.settings.round||2.5):1;
+    const stp=f==='kg'?stepOf(S.active.items[+r.dataset.i].exId):1;
     let v=(+inp.value||0)+(+t.dataset.v)*stp; if(v<0)v=0;
     inp.value=v?fmt(v):''; s[f]=v; save(); return; }
   if(a==='addset'){ const it=S.active.items[i],l=it.sets[it.sets.length-1]||{};
@@ -1016,13 +1138,21 @@ function act(t,ev){
       {exId:x,rest:EX(x).rest,goal:'自由',sets:[{kg:'',reps:'',rpe:'',done:false}]})); save();render(); },true);return; }
   if(a==='focus'){ openFocus();return; }
   if(a==='finish'){ finish();return; }
+  if(a==='stalefin'){ const left=S.active.items.reduce((n,it)=>n+it.sets.filter(x=>!x.done).length,0);
+    if(left)S.active.items.forEach(it=>it.sets=it.sets.filter(x=>x.done));   // 残りセットは記録しない
+    finish();return; }
+  if(a==='staletoday'){ S.active.date=todayStr();save();render();toast('今日の日付で続けます');return; }
   if(a==='cancel'){ if(confirm('このセッションを破棄しますか？')){S.active=null;save();render(true);} return; }
   if(a==='fxclose'){ $('#focus').classList.remove('on');render();return; }
   if(a==='fxdone'){ fxDone(false);return; }
   if(a==='fxskip'){ fxDone(true);return; }
   if(a==='fxn'){ const f=t.dataset.f,map={kg:'#fxKgI',reps:'#fxRepI',rpe:'#fxRpeI'},inp=$(map[f]);
-    const stp=f==='kg'?(S.settings.round||2.5):f==='rpe'?0.5:1;
-    let v=(+inp.value||0)+(+t.dataset.v)*stp; if(v<0)v=0; inp.value=v?fmt(v):''; paintFX(); return; }
+    const exId=S.active.items[FX.i].exId;
+    const stp=f==='kg'?stepOf(exId):f==='rpe'?0.5:1;
+    let v;
+    if(f==='rpe'&&inp.value===''){ v=8; }
+    else { v=(+inp.value||0)+(+t.dataset.v)*stp; if(f==='rpe')v=Math.min(10,Math.max(5,v)); }
+    if(v<0)v=0; inp.value=v?fmt(v):''; paintFX(); return; }
   if(a==='timer'){ timerPanel();return; }
   if(a==='autotgl'){ S.settings.autoTimer=!autoOn();save();timerPanel();return; }
   if(a==='ver'){ sheet('バージョン','<div class="ttl">RACK v'+VER+'</div>'+
@@ -1069,13 +1199,18 @@ function act(t,ev){
       '<label class="f">種目名</label><input type="text" id="exN" value="'+esc(e.name)+'">'+
       '<label class="f">休憩 秒</label><input type="number" id="exR" value="'+e.rest+'">'+
       '<label class="f"><input type="checkbox" id="exB" '+(e.bar?'checked':'')+' style="width:auto"> バーベル種目（プレート計算する）</label>'+
+      '<label class="f">重量の刻み kg（空欄＝バーベルは'+(S.settings.round||2.5)+'、それ以外は1）</label>'+
+      '<input type="number" inputmode="decimal" id="exSt" step="0.25" value="'+(e.step||'')+'" placeholder="自動">'+
       '<label class="f"><input type="checkbox" id="exG" '+(e.big3?'checked':'')+' style="width:auto"> BIG3として扱う</label>'+
       '<button class="btn wide fill" style="margin-top:14px" id="exS">保存</button>'+
       (id?'<button class="btn wide ghost" style="margin-top:8px" id="exD">削除</button>':''),()=>{
         $('#exS').onclick=()=>{ e.name=$('#exN').value.trim()||'無名の種目';e.rest=+$('#exR').value||180;
-          e.bar=$('#exB').checked;e.big3=$('#exG').checked;
+          e.bar=$('#exB').checked;e.big3=$('#exG').checked;e.step=+$('#exSt').value||0;
           if(e._new){delete e._new;S.exercises.push(e);} save();closeSheet();render(); };
-        if(id)$('#exD').onclick=()=>{ if(confirm('削除しますか？（過去の記録は残ります）')){S.exercises=S.exercises.filter(x=>x.id!==id);save();closeSheet();render();} };
+        if(id)$('#exD').onclick=()=>{
+          const used=S.menus.filter(m=>m.items.some(x=>x.exId===id));
+          if(used.length){ alert('「'+used.map(m=>m.name).join('」「')+'」で使われているため削除できません。\n先にメニューから外してください。');return; }
+          if(confirm('削除しますか？（過去の記録は残ります）')){S.exercises=S.exercises.filter(x=>x.id!==id);save();closeSheet();render();} };
       });return; }
   if(a==='restore'){ const b=backups().find(x=>String(x.t)===t.dataset.t); if(!b)return;
     if(!confirm('この時点のデータに戻します。いまの記録は上書きされます。よろしいですか？'))return;
@@ -1085,8 +1220,7 @@ function act(t,ev){
     '<div class="small mute" style="margin-bottom:12px">週に1回、アプリを開いたときに自動で保存されます（最新3件）。'+
     'この端末の中に保存されるため、機種変更やSafariのデータ削除では消えます。念のため月1回は「書き出す」も使ってください。</div>'+
     backupList());return; }
-  if(a==='export'){ const b=new Blob([JSON.stringify(S)],{type:'application/json'}),u=URL.createObjectURL(b),l=document.createElement('a');
-    l.href=u;l.download='rack-'+todayStr()+'.json';l.click();setTimeout(()=>URL.revokeObjectURL(u),1000);toast('書き出しました');return; }
+  if(a==='export'){ exportData();return; }
   if(a==='import'){ const inp=document.createElement('input');inp.type='file';inp.accept='.json,application/json';
     inp.onchange=()=>{const f=inp.files[0];if(!f)return;const r=new FileReader();
       r.onload=()=>{try{const d=JSON.parse(r.result);if(!d.exercises)throw 0;
@@ -1094,7 +1228,7 @@ function act(t,ev){
       r.readAsText(f);};inp.click();return; }
   if(a==='wipe'){ if(confirm('全データを削除します。')&&confirm('本当に削除しますか？')){localStorage.removeItem(KEY);load();render();toast('削除しました');} return; }
 }
-function load2(d){ S=d; const dd=defaults(); S.settings=Object.assign({},dd.settings,S.settings||{}); migrate(); }
+function load2(d){ S=d; migrate(); normalize(); }
 function grp(t){
   const G=ED._g; if(!G)return;
   const k=t.dataset.g;
@@ -1123,7 +1257,12 @@ function med(t){
     const nw=ED._new;delete ED._new;
     if(nw)S.menus.push(ED); else S.menus=S.menus.map(m=>m.id===ED.id?ED:m);
     save();closeSheet();TAB='build';render(true);toast('保存しました');return; }
-  if(k==='del'){ if(confirm('このメニューを削除しますか？')){S.menus=S.menus.filter(m=>m.id!==ED.id);save();closeSheet();render();} return; }
+  if(k==='del'){
+    const inPlans=S.plans.filter(p=>p.days.some(d=>d.menuId===ED.id));
+    const msg=inPlans.length?'このメニューはプラン「'+inPlans.map(p=>p.name).join('」「')+'」で使われています。\n削除すると、その日は「未設定」になります。削除しますか？':'このメニューを削除しますか？';
+    if(confirm(msg)){ S.menus=S.menus.filter(m=>m.id!==ED.id);
+      S.plans.forEach(p=>p.days.forEach(d=>{if(d.menuId===ED.id)d.menuId='';}));
+      save();closeSheet();render(); } return; }
 }
 function pld(t){
   const k=t.dataset.pl,row=t.closest('[data-i]'),i=row?+row.dataset.i:0,b=$('#shBody');
@@ -1154,7 +1293,9 @@ document.addEventListener('input',ev=>{
   const st=el.closest('.st');
   if(st&&S.active){ S.active.items[+st.dataset.i].sets[+st.dataset.j][el.dataset.f]=el.value;save();return; }
   if(el.id==='fxKgI'){ paintFX();return; }
-  if(el.dataset.rm){ S.oneRM[el.dataset.rm]=+el.value||0;save();return; }
+  if(el.dataset.rm){ S.oneRM[el.dataset.rm]=+el.value||0; S.rmAt=S.rmAt||{}; S.rmAt[el.dataset.rm]=Date.now(); save();
+    const tag=document.querySelector('[data-rmsrc="'+el.dataset.rm+'"]'); if(tag)tag.textContent='いまの基準：'+fmt(+el.value||0)+'kg（この値から数え直します）';
+    return; }
   if(el.dataset.preset!=null){ S.settings.presets[+el.dataset.preset]=parseTimeText(el.value);save();return; }
   if(el.dataset.cfg){ const c=el.dataset.cfg;
     S.settings[c]=(c==='scName'||c==='scAfter')?el.value:c==='autoTimer'?el.value==='1':(+el.value||(c==='round'?2.5:0));
@@ -1164,7 +1305,7 @@ document.addEventListener('visibilitychange',()=>{ if(!document.hidden&&T.h)tick
 
 /* 起動 */
 load(); autoBackup(); TAB='today'; document.getElementById('ver').textContent='v'+VER; render();
-if(!S.tour&&!S.menus.length&&!S.logs.length) setTimeout(tour,400);
+setTimeout(()=>{ if(!S.tour&&!S.menus.length&&!S.logs.length)tour(); },400);
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 </script>
 </body>
